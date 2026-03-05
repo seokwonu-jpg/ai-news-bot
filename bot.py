@@ -10,7 +10,10 @@ from summarizer import summarize_articles
 from slack_sender import send_to_slack
 from dedup import load_seen, filter_new, mark_seen, save_seen
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s %(levelname)s [%(name)s] %(message)s',
+)
 logger = logging.getLogger('bot')
 
 
