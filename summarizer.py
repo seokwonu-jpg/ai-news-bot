@@ -9,7 +9,7 @@ logger = logging.getLogger("summarizer")
 
 _GEMINI_ENDPOINT = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash:generateContent"
+    "gemini-1.5-flash:generateContent"
 )
 _DEFAULT_TIP = "관련 AI 기능 도입을 팀 내 검토해보세요."
 
@@ -33,8 +33,8 @@ def _call_gemini(prompt: str, api_key: str) -> str:
     response.raise_for_status()
     data = response.json()
     raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
-    print("[summarizer] Gemini raw response text:")
-    print(raw_text)
+    print("[summarizer] Gemini raw response:")
+    print(raw_text[:500])
     return raw_text
 
 
@@ -62,7 +62,7 @@ def summarize_articles(articles: list[dict]) -> list[dict]:
   {{
     "index": 0,
     "korean_summary": "기사 핵심을 자연스러운 한국어로 2-3문장 요약",
-    "practical_tip": "한국 비즈니스 실무자가 바로 적용할 수 있는 구체적인 실무 팁. 예: 'Notion AI 회의록 기능으로 팀 미팅 정리 시간 50% 절감 가능'. 절대로 '원문을 확인하세요' 같은 무의미한 답변 금지."
+    "practical_tip": "한국 비즈니스 실무자가 바로 적용할 수 있는 구체적인 실무 팁. 예: 'Notion AI 회의록 기능으로 팀 미팅 정리 시간 50% 절감 가능'. 절대로 원문을 확인하세요 같은 무의미한 답변 금지."
   }}
 ]
 
@@ -77,13 +77,12 @@ def summarize_articles(articles: list[dict]) -> list[dict]:
         try:
             result_items = json.loads(cleaned)
         except json.JSONDecodeError:
-            print("[summarizer] 1차 JSON 파싱 실패, 배열 추출 재시도")
             match = re.search(r"\[.*\]", cleaned, re.DOTALL)
             if match:
                 result_items = json.loads(match.group())
             else:
                 print("[summarizer] JSON 파싱 최종 실패 -> fallback")
-                print(cleaned[:1000])
+                print(cleaned[:500])
                 return _fallback(articles)
 
         result_map = {}

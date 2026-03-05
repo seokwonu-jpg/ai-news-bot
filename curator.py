@@ -9,7 +9,7 @@ logger = logging.getLogger("curator")
 
 _GEMINI_ENDPOINT = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash:generateContent"
+    "gemini-1.5-flash:generateContent"
 )
 
 
@@ -32,8 +32,8 @@ def _call_gemini(prompt: str, api_key: str) -> str:
     response.raise_for_status()
     data = response.json()
     raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
-    print("[curator] Gemini raw response text:")
-    print(raw_text)
+    print("[curator] Gemini raw response:")
+    print(raw_text[:500])
     return raw_text
 
 
@@ -44,7 +44,6 @@ def score_articles(articles: list[dict], top_n: int = 8) -> list[dict]:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         logger.warning("GEMINI_API_KEY 없음, fallback 처리")
-        print("[curator] GEMINI_API_KEY 없음 -> fallback")
         return _fallback(articles, top_n)
 
     article_texts = []
@@ -52,16 +51,16 @@ def score_articles(articles: list[dict], top_n: int = 8) -> list[dict]:
         title = str(article.get("title", "")).strip()
         summary = str(article.get("summary", "")).strip()[:300]
         cat = article.get("category", "")
-        category_hint = " [영상/이미지 AI 카테고리]" if cat == "video_image" else ""
+        category_hint = " [영상/이미지 AI]" if cat == "video_image" else ""
         article_texts.append(f"[{idx}]{category_hint}\n제목: {title}\n내용: {summary}")
 
     prompt = f"""당신은 AI 뉴스 큐레이터입니다. 아래 기사들을 1-10점으로 평가하세요.
 
 채점 기준:
-- 9-10점: AI 영상/이미지 생성 모델/기능(Sora, Veo, Kling, Runway, Pika, Midjourney, DALL-E, Stable Diffusion), I2V/T2V 기술, [영상/이미지 AI 카테고리] 표시 기사
-- 7-8점: 실무 적용도가 높은 생성형 AI 신기능/제품 출시, 업무 자동화/생산성 향상에 직접적인 기사
-- 5-6점: 일반적인 AI 트렌드/업계 동향 기사
-- 1-4점: 순수 연구/정책/규제 중심으로 실무 적용도가 낮은 기사
+- 9-10점: AI 영상/이미지 생성 모델/기능(Sora, Veo, Kling, Runway, Pika, Midjourney, DALL-E, Stable Diffusion), I2V/T2V 기술, [영상/이미지 AI] 표시 기사
+- 7-8점: 실무 적용도 높은 생성형 AI 신기능/제품 출시, 업무 자동화/생산성 향상 기사
+- 5-6점: 일반적인 AI 트렌드/업계 동향
+- 1-4점: 순수 연구/정책/규제 중심, 실무 적용도 낮은 기사
 
 반드시 아래 JSON 배열 형식으로만 응답하세요 (다른 텍스트 없이):
 [{{"index": 0, "score": 8, "reason": "이유"}}, ...]
@@ -77,13 +76,11 @@ def score_articles(articles: list[dict], top_n: int = 8) -> list[dict]:
         try:
             scored_items = json.loads(cleaned)
         except json.JSONDecodeError:
-            print("[curator] 1차 JSON 파싱 실패, 배열 추출 재시도")
             match = re.search(r"\[.*\]", cleaned, re.DOTALL)
             if match:
                 scored_items = json.loads(match.group())
             else:
-                print("[curator] JSON 파싱 최종 실패 -> fallback")
-                print(cleaned[:1000])
+                print("[curator] JSON 파싱 실패 -> fallback")
                 return _fallback(articles, top_n)
 
         score_by_index: dict[int, int] = {}
