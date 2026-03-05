@@ -1,7 +1,8 @@
-import anthropic
 import json
 import logging
 import os
+
+import google.generativeai as genai
 
 logger = logging.getLogger('curator')
 
@@ -18,15 +19,18 @@ SCORING_SYSTEM_PROMPT = (
 
 def score_articles(articles: list[dict], top_n: int = 8) -> list[dict]:
     try:
-        if top_n <= 0:
-            return []
-        if not articles:
+        if top_n <= 0 or not articles:
             return []
 
-        if not os.getenv('ANTHROPIC_API_KEY'):
-            logger.warning('ANTHROPIC_API_KEY is not set. Anthropic SDK may fail to authenticate.')
+        api_key = os.getenv('GEMINI_API_KEY')
+        if not api_key:
+            logger.warning('GEMINI_API_KEY is not set.')
+        genai.configure(api_key=api_key)
 
-        client = anthropic.Anthropic()
+        model = genai.GenerativeModel(
+            model_name='gemini-2.0-flash',
+            system_instruction=SCORING_SYSTEM_PROMPT,
+        )
 
         lines = []
         for idx, article in enumerate(articles):
@@ -36,18 +40,8 @@ def score_articles(articles: list[dict], top_n: int = 8) -> list[dict]:
 
         user_prompt = 'Score the following AI news articles using the rubric.\n\n' + '\n\n'.join(lines)
 
-        response = client.messages.create(
-            model='claude-haiku-4-5-20251001',
-            max_tokens=1024,
-            system=SCORING_SYSTEM_PROMPT,
-            messages=[{'role': 'user', 'content': user_prompt}],
-        )
-
-        raw_text = ''.join(
-            block.text
-            for block in getattr(response, 'content', [])
-            if getattr(block, 'type', '') == 'text'
-        ).strip()
+        response = model.generate_content(user_prompt)
+        raw_text = response.text.strip()
 
         try:
             scored_items = json.loads(raw_text)
@@ -56,7 +50,7 @@ def score_articles(articles: list[dict], top_n: int = 8) -> list[dict]:
             end = raw_text.rfind(']')
             if start == -1 or end == -1 or end < start:
                 raise
-            scored_items = json.loads(raw_text[start : end + 1])
+            scored_items = json.loads(raw_text[start:end + 1])
 
         score_by_index: dict[int, int] = {}
         if isinstance(scored_items, list):
@@ -75,6 +69,7 @@ def score_articles(articles: list[dict], top_n: int = 8) -> list[dict]:
 
         ranked = sorted(articles, key=lambda a: a.get('score', 0), reverse=True)
         return ranked[:top_n]
+
     except Exception:
         logger.exception('Failed to score articles')
         fallback = articles[:top_n]

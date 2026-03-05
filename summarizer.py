@@ -1,6 +1,7 @@
-import anthropic
 import logging
 import os
+
+import google.generativeai as genai
 
 logger = logging.getLogger("summarizer")
 
@@ -15,26 +16,25 @@ SUMMARY_SYSTEM_PROMPT = (
 
 def summarize_article(article: dict) -> dict:
     try:
-        client = anthropic.Anthropic()
+        api_key = os.getenv('GEMINI_API_KEY')
+        genai.configure(api_key=api_key)
+
+        model = genai.GenerativeModel(
+            model_name='gemini-2.0-flash',
+            system_instruction=SUMMARY_SYSTEM_PROMPT,
+        )
 
         user_message = f'제목: {article["title"]}\n내용: {article["summary"]}'
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=512,
-            system=SUMMARY_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
-        )
+        response = model.generate_content(user_message)
+        response_text = response.text.strip()
 
-        response_text = "".join(
-            block.text for block in getattr(response, "content", []) if getattr(block, "text", None)
-        )
         lines = [line.strip() for line in response_text.splitlines() if line.strip()]
 
         korean_summary = lines[0] if lines else article["title"]
         practical_tip = ""
         for line in lines:
             if line.startswith("실무 활용:"):
-                practical_tip = line[len("실무 활용:") :].strip()
+                practical_tip = line[len("실무 활용:"):].strip()
                 break
         if not practical_tip:
             practical_tip = "원문을 확인하세요."
@@ -43,6 +43,7 @@ def summarize_article(article: dict) -> dict:
         updated_article["korean_summary"] = korean_summary
         updated_article["practical_tip"] = practical_tip
         return updated_article
+
     except Exception:
         logger.exception("Failed to summarize article")
         updated_article = dict(article)

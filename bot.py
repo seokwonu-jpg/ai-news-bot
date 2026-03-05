@@ -17,7 +17,7 @@ logger = logging.getLogger('bot')
 def main():
     load_dotenv()
 
-    required_vars = ['ANTHROPIC_API_KEY', 'SLACK_WEBHOOK_URL']
+    required_vars = ['GEMINI_API_KEY', 'SLACK_WEBHOOK_URL']
     missing = [var for var in required_vars if not os.environ.get(var)]
     if missing:
         print(f"Missing required environment variables: {', '.join(missing)}")
