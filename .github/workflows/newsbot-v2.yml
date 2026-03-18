@@ -1,0 +1,100 @@
+name: Kanta 뉴스봇 v2 수동 실행
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run mode"
+        type: choice
+        options:
+          - daily
+          - alert
+        default: daily
+        required: true
+      dry_run:
+        description: "Skip Slack delivery and save preview JSON"
+        type: boolean
+        default: true
+        required: true
+      fetch_hours:
+        description: "Optional fetch window override"
+        type: string
+        default: ""
+        required: false
+      limit:
+        description: "daily=top_n, alert=max_items"
+        type: string
+        default: ""
+        required: false
+      alert_min_score:
+        description: "Optional alert threshold override"
+        type: string
+        default: ""
+        required: false
+
+jobs:
+  run-newsbot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-v2-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-v2-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run newsbot v2
+        shell: bash
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_ALERT_WEBHOOK_URL: ${{ secrets.SLACK_ALERT_WEBHOOK_URL }}
+        run: |
+          mkdir -p reports
+          cmd=(python newsbot.py "${{ inputs.mode }}")
+
+          if [[ -n "${{ inputs.fetch_hours }}" ]]; then
+            cmd+=(--fetch-hours "${{ inputs.fetch_hours }}")
+          fi
+
+          if [[ "${{ inputs.mode }}" == "daily" && -n "${{ inputs.limit }}" ]]; then
+            cmd+=(--top-n "${{ inputs.limit }}")
+          fi
+
+          if [[ "${{ inputs.mode }}" == "alert" && -n "${{ inputs.limit }}" ]]; then
+            cmd+=(--max-items "${{ inputs.limit }}")
+          fi
+
+          if [[ "${{ inputs.mode }}" == "alert" && -n "${{ inputs.alert_min_score }}" ]]; then
+            cmd+=(--min-score "${{ inputs.alert_min_score }}")
+          fi
+
+          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            cmd+=(--dry-run --preview-path "reports/${{ inputs.mode }}-preview.json")
+          fi
+
+          printf 'Running: '
+          printf '%q ' "${cmd[@]}"
+          printf '\n'
+          "${cmd[@]}"
+
+      - name: Upload preview artifact
+        if: ${{ inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: newsbot-v2-preview-${{ inputs.mode }}
+          path: reports/*.json
+          if-no-files-found: ignore
