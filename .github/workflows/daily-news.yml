@@ -1,9 +1,6 @@
 name: AI 뉴스 데일리 브리핑
 
 on:
-  schedule:
-    # 매일 오전 9시 KST (= UTC 00:00)
-    - cron: '0 0 * * *'
   # 수동 실행 (테스트용)
   workflow_dispatch:
 
