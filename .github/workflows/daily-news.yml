@@ -1,7 +1,9 @@
 name: AI 뉴스 데일리 브리핑
 
 on:
-  # 수동 실행 (테스트용)
+  schedule:
+    # 매일 09:17 KST / GitHub Actions 정각 혼잡 회피
+    - cron: '17 0 * * *'
   workflow_dispatch:
 
 jobs:
@@ -41,7 +43,7 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: python bot.py
+        run: python newsbot.py daily --fetch-hours 24 --top-n 6
 
       - name: Save seen articles cache
         if: always()

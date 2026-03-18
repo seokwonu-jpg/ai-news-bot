@@ -4,7 +4,8 @@ Quick runbook for the daily briefing bot and urgent alert bot.
 
 ## Current operating mode
 
-- Legacy daily auto-send is disabled in `.github/workflows/daily-news.yml`.
+- Daily auto-send is enabled at `09:17 KST` via `.github/workflows/daily-news.yml`.
+- Alert auto-send is not part of the active operating flow.
 - The recommended entry point for validation is `newsbot.py`.
 - Start with `--dry-run` and inspect the preview payload before re-enabling any scheduled delivery.
 
