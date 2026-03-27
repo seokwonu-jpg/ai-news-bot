@@ -85,7 +85,7 @@ def write_preview(payload: dict, preview_path: str | None, logger: logging.Logge
     preview_file = Path(preview_path)
     preview_file.parent.mkdir(parents=True, exist_ok=True)
     preview_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    logger.info("Saved dry-run preview to %s", preview_file)
+    logger.info("Saved preview to %s", preview_file)
 
 
 def run_pipeline(
@@ -127,10 +127,11 @@ def run_pipeline(
     digest["meta"] = digest_meta
 
     headline_suffix = str(digest_meta.get("headline_suffix", "")).strip()
+    payload = build_payload(digest, message_kind=config.message_kind, headline_suffix=headline_suffix)
+    payload["meta"] = digest_meta
+    write_preview(payload, config.preview_path, logger)
+
     if config.dry_run:
-        payload = build_payload(digest, message_kind=config.message_kind, headline_suffix=headline_suffix)
-        payload["meta"] = digest_meta
-        write_preview(payload, config.preview_path, logger)
         logger.info("Dry run enabled. Slack delivery skipped.")
         logger.info("Preview headline: %s", payload.get("text", ""))
         return 0

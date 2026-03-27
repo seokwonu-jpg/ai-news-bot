@@ -4,11 +4,16 @@ import html
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin
 
 import feedparser
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+from dedup import canonicalize_article_url, dedupe_articles_by_url
 
 logger = logging.getLogger("rss_fetcher")
 logger.addHandler(logging.NullHandler())
@@ -20,6 +25,20 @@ _REQUEST_HEADERS = {
         "Chrome/133.0.0.0 Safari/537.36"
     )
 }
+_RETRY = Retry(
+    total=2,
+    connect=2,
+    read=2,
+    status=2,
+    backoff_factor=0.6,
+    status_forcelist=(429, 500, 502, 503, 504),
+    allowed_methods=frozenset({"GET", "HEAD"}),
+)
+_SESSION = requests.Session()
+_SESSION.headers.update(_REQUEST_HEADERS)
+_SESSION.mount("https://", HTTPAdapter(max_retries=_RETRY))
+_SESSION.mount("http://", HTTPAdapter(max_retries=_RETRY))
+_HTML_FETCH_WORKERS = 4
 _FEED_LINK_PATTERN = re.compile(
     r'<link[^>]+type=["\'](?:application/rss\+xml|application/atom\+xml|application/xml|text/xml)["\'][^>]+href=["\']([^"\']+)["\']',
     re.IGNORECASE,
@@ -91,7 +110,7 @@ def _discover_feed_url(page_html: str, source_url: str) -> str | None:
 
 
 def _load_feed(source_url: str):
-    response = requests.get(source_url, headers=_REQUEST_HEADERS, timeout=15)
+    response = _SESSION.get(source_url, timeout=15)
     response.raise_for_status()
 
     content_type = response.headers.get("Content-Type", "").lower()
@@ -100,7 +119,7 @@ def _load_feed(source_url: str):
     if "html" in content_type:
         discovered_url = _discover_feed_url(response.text, source_url)
         if discovered_url:
-            discovered_response = requests.get(discovered_url, headers=_REQUEST_HEADERS, timeout=15)
+            discovered_response = _SESSION.get(discovered_url, timeout=15)
             discovered_response.raise_for_status()
             content = _sanitize_feed_bytes(discovered_response.content)
             return feedparser.parse(content)
@@ -275,7 +294,7 @@ def _extract_listing_urls(
 
 
 def _parse_html_listing_article(article_url: str, source: dict) -> dict | None:
-    response = requests.get(article_url, headers=_REQUEST_HEADERS, timeout=20)
+    response = _SESSION.get(article_url, timeout=20)
     response.raise_for_status()
 
     page_html = response.text
@@ -289,7 +308,7 @@ def _parse_html_listing_article(article_url: str, source: dict) -> dict | None:
     content_text = summary or title
     return {
         "title": title,
-        "url": article_url,
+        "url": canonicalize_article_url(article_url) or article_url,
         "summary": summary,
         "content_text": content_text[:4000],
         "keywords": [],
@@ -305,7 +324,7 @@ def _collect_html_listing_articles(source: dict) -> list[dict]:
     parser_name = source.get("listing_parser", "")
     limit = int(source.get("listing_limit", 12))
 
-    response = requests.get(source_url, headers=_REQUEST_HEADERS, timeout=20)
+    response = _SESSION.get(source_url, timeout=20)
     response.raise_for_status()
 
     article_urls = _extract_listing_urls(
@@ -315,17 +334,26 @@ def _collect_html_listing_articles(source: dict) -> list[dict]:
         limit=limit,
         listing_patterns=source.get("listing_patterns"),
     )
-    articles: list[dict] = []
-    for article_url in article_urls:
+    def _safe_parse(article_url: str) -> dict | None:
         try:
-            article = _parse_html_listing_article(article_url, source)
+            return _parse_html_listing_article(article_url, source)
         except Exception as exc:
             logger.warning("Failed to fetch HTML article '%s' for '%s': %s", article_url, source.get("name", ""), exc)
-            continue
+            return None
 
-        if article:
-            articles.append(article)
+    articles: list[dict] = []
+    max_workers = min(_HTML_FETCH_WORKERS, len(article_urls))
+    if max_workers <= 1:
+        for article_url in article_urls:
+            article = _safe_parse(article_url)
+            if article:
+                articles.append(article)
+        return articles
 
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for article in executor.map(_safe_parse, article_urls):
+            if article:
+                articles.append(article)
     return articles
 
 
@@ -349,6 +377,7 @@ def _feed_to_articles(feed, source: dict, cutoff: datetime) -> list[dict]:
             url = entry.get("link")
         if not url:
             continue
+        normalized_url = canonicalize_article_url(url) or url
 
         title = getattr(entry, "title", None)
         if title is None and hasattr(entry, "get"):
@@ -365,7 +394,7 @@ def _feed_to_articles(feed, source: dict, cutoff: datetime) -> list[dict]:
         articles.append(
             {
                 "title": title or "",
-                "url": url,
+                "url": normalized_url,
                 "summary": _strip_html(summary or ""),
                 "content_text": content_text,
                 "keywords": _extract_keywords(entry),
@@ -380,14 +409,7 @@ def _feed_to_articles(feed, source: dict, cutoff: datetime) -> list[dict]:
 
 
 def _dedupe_articles(articles: list[dict], seen_urls: set[str]) -> list[dict]:
-    deduped: list[dict] = []
-    for article in articles:
-        url = article.get("url")
-        if not isinstance(url, str) or url in seen_urls:
-            continue
-        seen_urls.add(url)
-        deduped.append(article)
-    return deduped
+    return dedupe_articles_by_url(articles, seen_urls)
 
 
 def fetch_articles(sources: list[dict], hours: int = 24) -> list[dict]:
