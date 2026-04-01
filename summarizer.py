@@ -3,10 +3,9 @@ import logging
 import os
 import re
 
-import requests
 from article_focus import get_focus_bucket
 from audience_config import TEAM_ALERT_TITLE, TEAM_BRIEFING_TITLE, TEAM_CONTEXT, TEAM_NAME
-from gemini_config import gemini_endpoint, resolve_gemini_model
+from llm_client import call_json_text, credential_env_name, credentials_available, resolve_provider
 
 logger = logging.getLogger("summarizer")
 _DEFAULT_TIP = "기존 업무 흐름 한 곳을 정해 1주일 파일럿 자동화를 설계해보세요."
@@ -143,49 +142,37 @@ _TOPIC_RULES = [
         "kanta_angle": "Kanta가 이미 쓰는 협업 툴에 AI 기능이 붙는다면 제작 운영과 커뮤니케이션 비용을 낮출 수 있습니다.",
     },
 ]
-
-
-def _call_gemini(prompt: str, api_key: str) -> str:
-    model_name = resolve_gemini_model("summarizer")
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.2,
-            "maxOutputTokens": 4096,
-            "responseMimeType": "application/json",
-        },
-    }
-    logger.info("Gemini summary request started (model=%s prompt chars=%d)", model_name, len(prompt))
-    response = requests.post(
-        gemini_endpoint("summarizer"),
-        headers={"x-goog-api-key": api_key},
-        json=payload,
-        timeout=60,
-    )
-    logger.info("Gemini summary response status=%s", response.status_code)
-    if response.status_code >= 400:
-        logger.error("Gemini summary error body=%s", response.text)
-    response.raise_for_status()
-    data = response.json()
-    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-    text_chunks = [part.get("text", "") for part in parts if isinstance(part, dict) and part.get("text")]
-    if text_chunks:
-        return "".join(text_chunks)
-    raise RuntimeError(f"Gemini summary returned no text parts: {json.dumps(data, ensure_ascii=False)[:800]}")
-
-
 def _safe_load_json_payload(raw_text: str):
-    cleaned = re.sub(r"```(?:json)?\s*", "", raw_text).strip("`").strip()
-    candidates = [cleaned]
+    cleaned = re.sub(r"```(?:json)?\s*", "", raw_text).strip("`").strip().lstrip("\ufeff")
+    candidates: list[str] = []
+
+    def _add_candidate(value) -> None:
+        candidate = str(value or "").strip()
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    _add_candidate(cleaned)
+
+    try:
+        decoded = json.loads(cleaned)
+    except (TypeError, json.JSONDecodeError):
+        decoded = None
+
+    if isinstance(decoded, str):
+        _add_candidate(decoded)
 
     for pattern in (r"\{.*\}", r"\[.*\]"):
         match = re.search(pattern, cleaned, re.DOTALL)
         if match:
-            candidates.append(match.group())
+            _add_candidate(match.group())
 
     for candidate in candidates:
         try:
-            return json.loads(candidate)
+            parsed = json.loads(candidate)
+            if isinstance(parsed, str):
+                parsed = json.loads(parsed)
+            if isinstance(parsed, (dict, list)):
+                return parsed
         except json.JSONDecodeError:
             continue
 
@@ -430,9 +417,13 @@ def summarize_articles(articles: list[dict], briefing_mode: str = "daily") -> di
     if not articles:
         return {"overview": {"market_summary": "", "action_items": []}, "articles": [], "meta": {"briefing_mode": briefing_mode}}
 
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        logger.warning("GEMINI_API_KEY 없음, heuristic fallback 사용")
+    if not credentials_available("summarizer"):
+        provider = resolve_provider("summarizer")
+        logger.warning(
+            "%s 없음 또는 사용 불가 (provider=%s), heuristic fallback 사용",
+            credential_env_name(provider),
+            provider,
+        )
         fallback_articles = [_fallback_article(article) for article in articles]
         return {
             "overview": _build_fallback_overview(fallback_articles, briefing_mode=briefing_mode),
@@ -492,7 +483,15 @@ def summarize_articles(articles: list[dict], briefing_mode: str = "daily") -> di
 """
 
     try:
-        payload = _safe_load_json_payload(_call_gemini(prompt, api_key))
+        payload = _safe_load_json_payload(
+            call_json_text(
+                task="summarizer",
+                prompt=prompt,
+                logger=logger,
+                max_output_tokens=4096,
+                temperature=0.2,
+            )
+        )
         if isinstance(payload, list):
             payload = {"overview": {}, "articles": payload}
 

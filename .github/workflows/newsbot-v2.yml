@@ -60,6 +60,14 @@ jobs:
         shell: bash
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
+          LITELLM_API_BASE: ${{ vars.LITELLM_API_BASE }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          LLM_CURATOR_PROVIDER: ${{ vars.LLM_CURATOR_PROVIDER }}
+          LLM_SUMMARIZER_PROVIDER: ${{ vars.LLM_SUMMARIZER_PROVIDER }}
+          LITELLM_MODEL: ${{ vars.LITELLM_MODEL }}
+          LITELLM_CURATOR_MODEL: ${{ vars.LITELLM_CURATOR_MODEL }}
+          LITELLM_SUMMARIZER_MODEL: ${{ vars.LITELLM_SUMMARIZER_MODEL }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           SLACK_ALERT_WEBHOOK_URL: ${{ secrets.SLACK_ALERT_WEBHOOK_URL }}
         run: |

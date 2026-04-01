@@ -13,6 +13,7 @@ from alert_rules import DEFAULT_MAX_ALERTS, DEFAULT_MIN_ALERT_SCORE, select_aler
 from article_focus import annotate_articles, get_focus_bucket
 from curator import score_articles
 from kanta_enrichment import enrich_digest
+from llm_client import credential_env_name, credentials_available, resolve_model, resolve_provider
 from rss_fetcher import fetch_articles
 from selection_policy import annotate_kanta_fit_batch, filter_alert_candidates, filter_daily_candidates
 from sources_config import SOURCES
@@ -22,12 +23,14 @@ LOGGER = logging.getLogger("compare_summary_models")
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Compare summary outputs across Gemini models.")
+    parser = argparse.ArgumentParser(description="Compare summary outputs across LLM providers/models.")
     parser.add_argument("--briefing-mode", choices=("daily", "alert"), default="daily")
     parser.add_argument("--hours", type=int, default=None, help="Lookback window. Defaults to 24 for daily, 12 for alert.")
     parser.add_argument("--top-n", type=int, default=3, help="Number of selected articles to compare.")
-    parser.add_argument("--baseline-model", default=None, help="Default: current GEMINI_SUMMARIZER_MODEL or GEMINI_MODEL.")
-    parser.add_argument("--candidate-model", default="gemini-2.5-pro", help="Model to compare against the baseline.")
+    parser.add_argument("--baseline-provider", choices=("gemini", "litellm"), default=None)
+    parser.add_argument("--baseline-model", default=None, help="Default: current provider-specific summarizer model.")
+    parser.add_argument("--candidate-provider", choices=("gemini", "litellm"), default=None)
+    parser.add_argument("--candidate-model", default=None, help="Default: candidate provider's summarizer model.")
     parser.add_argument(
         "--output",
         default=None,
@@ -41,20 +44,22 @@ def _default_hours(briefing_mode: str) -> int:
 
 
 @contextmanager
-def _temporary_env(name: str, value: str | None):
+def _temporary_envs(updates: dict[str, str | None]):
     sentinel = object()
-    previous = os.environ.get(name, sentinel)
+    previous = {name: os.environ.get(name, sentinel) for name in updates}
     try:
-        if value is None:
-            os.environ.pop(name, None)
-        else:
-            os.environ[name] = value
+        for name, value in updates.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
         yield
     finally:
-        if previous is sentinel:
-            os.environ.pop(name, None)
-        else:
-            os.environ[name] = previous
+        for name, value in previous.items():
+            if value is sentinel:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def _select_articles(briefing_mode: str, hours: int, top_n: int) -> list[dict]:
@@ -71,12 +76,23 @@ def _select_articles(briefing_mode: str, hours: int, top_n: int) -> list[dict]:
     return score_articles(filter_daily_candidates(articles), top_n=max(1, top_n))
 
 
-def _run_summary(articles: list[dict], briefing_mode: str, model_name: str | None) -> dict:
-    with _temporary_env("GEMINI_SUMMARIZER_MODEL", model_name):
+def _provider_model_env(provider_name: str, model_name: str | None) -> dict[str, str | None]:
+    return {
+        "LLM_SUMMARIZER_PROVIDER": provider_name,
+        "GEMINI_SUMMARIZER_MODEL": model_name if provider_name == "gemini" else None,
+        "LITELLM_SUMMARIZER_MODEL": model_name if provider_name == "litellm" else None,
+    }
+
+
+def _run_summary(articles: list[dict], briefing_mode: str, provider_name: str, model_name: str | None) -> dict:
+    with _temporary_envs(_provider_model_env(provider_name, model_name)):
         digest = summarize_articles(articles, briefing_mode=briefing_mode)
+        resolved_provider = resolve_provider("summarizer")
+        resolved_model = resolve_model("summarizer")
     digest = enrich_digest(digest)
     digest_meta = dict(digest.get("meta", {}))
-    digest_meta["comparison_model"] = model_name or os.getenv("GEMINI_SUMMARIZER_MODEL") or os.getenv("GEMINI_MODEL", "")
+    digest_meta["comparison_provider"] = resolved_provider
+    digest_meta["comparison_model"] = resolved_model
     digest["meta"] = digest_meta
     return digest
 
@@ -120,8 +136,8 @@ def _article_section(label: str, article: dict) -> str:
 
 def _build_report(
     *,
-    baseline_model: str,
-    candidate_model: str,
+    baseline_label: str,
+    candidate_label: str,
     baseline_digest: dict,
     candidate_digest: dict,
     briefing_mode: str,
@@ -135,15 +151,15 @@ def _build_report(
         "",
         f"- timestamp: {timestamp}",
         f"- briefing_mode: {briefing_mode}",
-        f"- baseline_model: {baseline_model}",
-        f"- candidate_model: {candidate_model}",
+        f"- baseline: {baseline_label}",
+        f"- candidate: {candidate_label}",
         f"- selected_articles: {len(baseline_articles)}",
         "",
         "## Overview",
         "",
-        _overview_section(f"Baseline ({baseline_model})", baseline_digest),
+        _overview_section(f"Baseline ({baseline_label})", baseline_digest),
         "",
-        _overview_section(f"Candidate ({candidate_model})", candidate_digest),
+        _overview_section(f"Candidate ({candidate_label})", candidate_digest),
         "",
     ]
 
@@ -153,9 +169,9 @@ def _build_report(
             [
                 _article_heading(baseline_article, index),
                 "",
-                _article_section(f"Baseline ({baseline_model})", baseline_article),
+                _article_section(f"Baseline ({baseline_label})", baseline_article),
                 "",
-                _article_section(f"Candidate ({candidate_model})", candidate_article),
+                _article_section(f"Candidate ({candidate_label})", candidate_article),
                 "",
             ]
         )
@@ -165,31 +181,38 @@ def _build_report(
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
-    load_dotenv(Path(__file__).with_name(".env"), override=True)
+    load_dotenv(Path(__file__).with_name(".env"))
 
     args = _parse_args()
     hours = args.hours or _default_hours(args.briefing_mode)
-    baseline_model = (
-        args.baseline_model
-        or os.getenv("GEMINI_SUMMARIZER_MODEL", "").strip()
-        or os.getenv("GEMINI_MODEL", "").strip()
-        or "gemini-2.5-flash"
-    )
-    candidate_model = args.candidate_model.strip()
+    baseline_provider = (args.baseline_provider or resolve_provider("summarizer")).strip().lower()
+    candidate_provider = (args.candidate_provider or baseline_provider).strip().lower()
 
-    if not os.getenv("GEMINI_API_KEY"):
-        raise RuntimeError("GEMINI_API_KEY is required for summary model comparison.")
+    with _temporary_envs(_provider_model_env(baseline_provider, args.baseline_model)):
+        if not credentials_available("summarizer"):
+            raise RuntimeError(
+                f"{credential_env_name(resolve_provider('summarizer'))} is required for baseline provider={baseline_provider}."
+            )
+
+    with _temporary_envs(_provider_model_env(candidate_provider, args.candidate_model)):
+        if not credentials_available("summarizer"):
+            raise RuntimeError(
+                f"{credential_env_name(resolve_provider('summarizer'))} is required for candidate provider={candidate_provider}."
+            )
 
     selected_articles = _select_articles(args.briefing_mode, hours, args.top_n)
     if not selected_articles:
         raise RuntimeError("No articles were selected for comparison.")
 
-    baseline_digest = _run_summary(selected_articles, args.briefing_mode, baseline_model)
-    candidate_digest = _run_summary(selected_articles, args.briefing_mode, candidate_model)
+    baseline_digest = _run_summary(selected_articles, args.briefing_mode, baseline_provider, args.baseline_model)
+    candidate_digest = _run_summary(selected_articles, args.briefing_mode, candidate_provider, args.candidate_model)
+
+    baseline_label = f"{baseline_digest['meta'].get('comparison_provider', baseline_provider)}:{baseline_digest['meta'].get('comparison_model', '-')}"
+    candidate_label = f"{candidate_digest['meta'].get('comparison_provider', candidate_provider)}:{candidate_digest['meta'].get('comparison_model', '-')}"
 
     report = _build_report(
-        baseline_model=baseline_model,
-        candidate_model=candidate_model,
+        baseline_label=baseline_label,
+        candidate_label=candidate_label,
         baseline_digest=baseline_digest,
         candidate_digest=candidate_digest,
         briefing_mode=args.briefing_mode,
@@ -199,8 +222,8 @@ def main() -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(report, encoding="utf-8")
 
-    print(f"baseline_model={baseline_model}")
-    print(f"candidate_model={candidate_model}")
+    print(f"baseline={baseline_label}")
+    print(f"candidate={candidate_label}")
     print(f"selected_articles={len(selected_articles)}")
     print(f"output={output_path}")
     return 0

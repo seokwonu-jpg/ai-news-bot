@@ -4,7 +4,6 @@ import os
 import re
 from datetime import datetime, timezone
 
-import requests
 from article_focus import get_focus_bucket
 from audience_config import (
     TEAM_CONTEXT,
@@ -15,7 +14,7 @@ from audience_config import (
     VOICE_PRIORITY_KEYWORDS,
     WORKFLOW_PRIORITY_KEYWORDS,
 )
-from gemini_config import gemini_endpoint, resolve_gemini_model
+from llm_client import call_json_text, credential_env_name, credentials_available, resolve_provider
 from selection_policy import DAILY_SOURCE_CAPS, get_kanta_fit_score, take_capped_articles
 
 logger = logging.getLogger("curator")
@@ -85,37 +84,6 @@ for keyword in TEAM_TOOL_WATCHLIST:
     _KANTA_EXECUTION_KEYWORDS[keyword] = max(_KANTA_EXECUTION_KEYWORDS.get(keyword, 0.0), 1.8)
 _PRIORITY_FOCUS_BUCKETS = ("video_image", "voice_audio")
 _MIN_FOCUS_SCORE = 6.5
-
-
-def _call_gemini(prompt: str, api_key: str) -> str:
-    model_name = resolve_gemini_model("curator")
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.2,
-            "maxOutputTokens": 2048,
-            "responseMimeType": "application/json",
-        },
-    }
-    logger.info("Gemini scoring request started (model=%s prompt chars=%d)", model_name, len(prompt))
-    response = requests.post(
-        gemini_endpoint("curator"),
-        headers={"x-goog-api-key": api_key},
-        json=payload,
-        timeout=60,
-    )
-    logger.info("Gemini scoring response status=%s", response.status_code)
-    if response.status_code >= 400:
-        logger.error("Gemini scoring error body=%s", response.text)
-    response.raise_for_status()
-    data = response.json()
-    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-    text_chunks = [part.get("text", "") for part in parts if isinstance(part, dict) and part.get("text")]
-    if text_chunks:
-        return "".join(text_chunks)
-    raise RuntimeError(f"Gemini scoring returned no text parts: {json.dumps(data, ensure_ascii=False)[:800]}")
-
-
 def _article_context(article: dict, idx: int) -> str:
     title = str(article.get("title", "")).strip()
     summary = str(article.get("summary", "")).strip()
@@ -252,11 +220,15 @@ def score_articles(articles: list[dict], top_n: int = 8) -> list[dict]:
     if top_n <= 0 or not articles:
         return []
 
-    api_key = os.getenv("GEMINI_API_KEY")
     heuristic_scores = [_heuristic_score(article) for article in articles]
 
-    if not api_key:
-        logger.warning("GEMINI_API_KEY 없음, heuristic fallback 사용")
+    if not credentials_available("curator"):
+        provider = resolve_provider("curator")
+        logger.warning(
+            "%s 없음 또는 사용 불가 (provider=%s), heuristic fallback 사용",
+            credential_env_name(provider),
+            provider,
+        )
         return _fallback(articles, heuristic_scores, top_n)
 
     prompt = f"""당신은 {TEAM_NAME} 팀을 위한 AI 뉴스 에디터입니다.
@@ -279,7 +251,15 @@ def score_articles(articles: list[dict], top_n: int = 8) -> list[dict]:
 """
 
     try:
-        scored_items = _safe_load_json_array(_call_gemini(prompt, api_key))
+        scored_items = _safe_load_json_array(
+            call_json_text(
+                task="curator",
+                prompt=prompt,
+                logger=logger,
+                max_output_tokens=2048,
+                temperature=0.2,
+            )
+        )
         llm_scores: dict[int, int] = {}
         for item in scored_items:
             if not isinstance(item, dict):
@@ -313,7 +293,7 @@ def score_articles(articles: list[dict], top_n: int = 8) -> list[dict]:
         logger.info("Article scoring completed (llm=%d heuristic=%d)", len(llm_scores), len(articles))
         return _apply_focus_balance(ranked_articles, top_n)
     except Exception as exc:
-        logger.exception("Gemini scoring failed: %s", exc)
+        logger.exception("LLM scoring failed: %s", exc)
         return _fallback(articles, heuristic_scores, top_n)
 
 

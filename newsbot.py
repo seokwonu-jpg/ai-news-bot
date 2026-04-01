@@ -77,6 +77,8 @@ def run_daily(args: argparse.Namespace) -> int:
             empty_selection_message="No articles were selected for the daily briefing.",
             dry_run=args.dry_run,
             preview_path=args.preview_path,
+            allow_seen_backfill=True,
+            fail_on_empty_fetch=True,
         ),
         select_articles=lambda articles: score_articles(filter_daily_candidates(articles), top_n=top_n),
         logger=logger,
@@ -117,7 +119,7 @@ def run_alert(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    load_dotenv(Path(__file__).with_name(".env"), override=True)
+    load_dotenv(Path(__file__).with_name(".env"))
     parser = build_parser()
     args = parser.parse_args()
 

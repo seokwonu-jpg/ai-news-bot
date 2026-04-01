@@ -36,6 +36,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Capture source health snapshot
+        continue-on-error: true
+        run: |
+          mkdir -p reports
+          python source_healthcheck.py --json > reports/source-health.json
+
       - name: Restore seen articles cache
         uses: actions/cache@v4
         with:
@@ -57,6 +63,14 @@ jobs:
       - name: Run news bot
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
+          LITELLM_API_BASE: ${{ vars.LITELLM_API_BASE }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          LLM_CURATOR_PROVIDER: ${{ vars.LLM_CURATOR_PROVIDER }}
+          LLM_SUMMARIZER_PROVIDER: ${{ vars.LLM_SUMMARIZER_PROVIDER }}
+          LITELLM_MODEL: ${{ vars.LITELLM_MODEL }}
+          LITELLM_CURATOR_MODEL: ${{ vars.LITELLM_CURATOR_MODEL }}
+          LITELLM_SUMMARIZER_MODEL: ${{ vars.LITELLM_SUMMARIZER_MODEL }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: python newsbot.py daily --fetch-hours 24 --top-n 6 --preview-path reports/daily-preview.json
 
@@ -65,7 +79,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: daily-news-preview
-          path: reports/daily-preview.json
+          path: reports/*.json
           if-no-files-found: ignore
 
       - name: Save seen articles cache

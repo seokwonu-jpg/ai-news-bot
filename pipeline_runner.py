@@ -32,6 +32,8 @@ class PipelineConfig:
     digest_meta_builder: DigestMetaBuilder | None = None
     dry_run: bool = False
     preview_path: str | None = None
+    allow_seen_backfill: bool = False
+    fail_on_empty_fetch: bool = False
 
 
 def env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -94,34 +96,57 @@ def run_pipeline(
     select_articles: ArticleSelector,
     logger: logging.Logger,
 ) -> int:
-    if not os.environ.get("GEMINI_API_KEY"):
-        logger.warning("GEMINI_API_KEY is missing. Falling back to heuristic mode.")
-
     logger.info("%s started", config.name)
 
     seen_urls = load_seen(config.cache_file)
     articles = annotate_kanta_fit_batch(annotate_articles(fetch_articles(SOURCES, hours=config.fetch_hours)))
     logger.info("Fetched %d articles", len(articles))
 
+    if not articles:
+        logger.error("Fetched 0 articles for %s", config.name)
+        if config.fail_on_empty_fetch:
+            return 1
+        return 0
+
     new_articles = filter_new(articles, seen_urls)
     skipped_count = len(articles) - len(new_articles)
     logger.info("New articles: %d (skipped duplicates: %d)", len(new_articles), skipped_count)
 
-    if not new_articles:
-        logger.info("No new articles found. Exiting.")
-        return 0
+    selection_pool = new_articles
+    used_seen_backfill = False
 
-    selected_articles = select_articles(new_articles)
+    if not new_articles:
+        if not config.allow_seen_backfill:
+            logger.info("No new articles found. Exiting.")
+            return 0
+
+        logger.warning("No new articles found. Falling back to recently fetched articles.")
+        selection_pool = articles
+        used_seen_backfill = True
+
+    selected_articles = select_articles(selection_pool)
+    if not selected_articles and config.allow_seen_backfill and selection_pool is not articles:
+        logger.warning("Selection from new articles was empty. Falling back to recently fetched articles.")
+        selected_articles = select_articles(articles)
+        used_seen_backfill = True
+
     if not selected_articles:
         logger.info(config.empty_selection_message)
         return 0
 
-    logger.info("Selected %d articles for %s", len(selected_articles), config.message_kind)
+    logger.info(
+        "Selected %d articles for %s%s",
+        len(selected_articles),
+        config.message_kind,
+        " (seen backfill)" if used_seen_backfill else "",
+    )
 
     digest = summarize_articles(selected_articles, briefing_mode=config.briefing_mode)
     digest = enrich_digest(digest)
     digest_meta = dict(digest.get("meta", {}))
     digest_meta["message_kind"] = config.message_kind
+    if used_seen_backfill:
+        digest_meta["selection_mode"] = "seen_backfill"
     if config.digest_meta_builder:
         digest_meta.update(config.digest_meta_builder(selected_articles))
     digest["meta"] = digest_meta
