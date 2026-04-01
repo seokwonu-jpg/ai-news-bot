@@ -1,0 +1,61 @@
+name: Kanta 긴급 알림
+
+on:
+  schedule:
+    # 매 2시간마다 실행
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
+
+jobs:
+  send-alerts:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-v3-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-v3-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore seen alerts cache
+        uses: actions/cache@v4
+        with:
+          path: seen_alerts.json
+          key: seen-alerts-${{ github.run_id }}
+          restore-keys: |
+            seen-alerts-
+
+      - name: Run alert bot
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
+          LITELLM_API_BASE: ${{ vars.LITELLM_API_BASE }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          LLM_CURATOR_PROVIDER: ${{ vars.LLM_CURATOR_PROVIDER }}
+          LLM_SUMMARIZER_PROVIDER: ${{ vars.LLM_SUMMARIZER_PROVIDER }}
+          LITELLM_MODEL: ${{ vars.LITELLM_MODEL }}
+          LITELLM_CURATOR_MODEL: ${{ vars.LITELLM_CURATOR_MODEL }}
+          LITELLM_SUMMARIZER_MODEL: ${{ vars.LITELLM_SUMMARIZER_MODEL }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_ALERT_WEBHOOK_URL: ${{ secrets.SLACK_ALERT_WEBHOOK_URL }}
+        run: python alert_bot.py
+
+      - name: Save seen alerts cache
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: seen_alerts.json
+          key: seen-alerts-${{ github.run_id }}
