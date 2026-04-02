@@ -135,8 +135,28 @@ Print source health as JSON:
 python source_healthcheck.py --json
 ```
 
+Run alert monitoring snapshot:
+
+```powershell
+python alert_monitoring_report.py
+```
+
+Print alert monitoring snapshot as JSON:
+
+```powershell
+python alert_monitoring_report.py --json
+```
+
 Run deterministic URL dedupe tests:
 
 ```powershell
 python -m unittest discover -s tests -p "test_*.py"
 ```
+
+## Alert monitoring guide
+
+- `degraded`: `0` articles were fetched, so check feed/network health before tuning the threshold.
+- `quiet`: articles were fetched, but nothing cleared the threshold. This is often healthy after stricter scoring.
+- `healthy`: `1-3` alerts cleared the threshold in the current window.
+- `noisy`: more than `3` alerts cleared the threshold, so the threshold or soft-context penalties may need tightening.
+- The snapshot uses `ALERT_FETCH_HOURS` and `ALERT_MIN_SCORE` by default, so it reflects the current scheduled-run profile unless overridden.

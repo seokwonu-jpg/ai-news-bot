@@ -134,7 +134,7 @@ def _headline_text(article: dict) -> str:
     )
 
 
-def score_alert(article: dict) -> tuple[float, str]:
+def score_alert_details(article: dict) -> dict:
     combined = _combined_text(article)
     headline = _headline_text(article)
     focus_bucket = get_focus_bucket(article)
@@ -205,6 +205,7 @@ def score_alert(article: dict) -> tuple[float, str]:
         score -= 2.2
 
     published = article.get("published")
+    age_hours = None
     if isinstance(published, datetime):
         age_hours = (datetime.now(timezone.utc) - published).total_seconds() / 3600
         if age_hours <= 3:
@@ -212,7 +213,25 @@ def score_alert(article: dict) -> tuple[float, str]:
         elif age_hours <= 6:
             score += 0.6
 
-    return round(score, 1), label
+    return {
+        "score": round(score, 1),
+        "label": label,
+        "focus_bucket": focus_bucket,
+        "kanta_fit_score": kanta_fit_score,
+        "watchlist_hit": watchlist_hit,
+        "bytedance_hit": bytedance_hit,
+        "launch_hit": launch_hit,
+        "operational_hit": operational_hit,
+        "risk_hit": risk_hit,
+        "soft_context_hit": soft_context_hit,
+        "priority": priority,
+        "age_hours": age_hours,
+    }
+
+
+def score_alert(article: dict) -> tuple[float, str]:
+    details = score_alert_details(article)
+    return details["score"], details["label"]
 
 
 def _blend_alert_priority(alert_score: float, kanta_fit_score: float) -> float:
@@ -226,12 +245,14 @@ def select_alert_articles(
 ) -> list[dict]:
     ranked: list[dict] = []
     for article in articles:
-        alert_score, alert_label = score_alert(article)
+        details = score_alert_details(article)
+        alert_score = details["score"]
+        alert_label = details["label"]
         if alert_score < min_score:
             continue
 
         updated = dict(article)
-        updated["focus_bucket"] = get_focus_bucket(article)
+        updated["focus_bucket"] = details["focus_bucket"]
         updated["alert_score"] = alert_score
         updated["alert_priority_score"] = _blend_alert_priority(alert_score, get_kanta_fit_score(article))
         updated["alert_label"] = alert_label
