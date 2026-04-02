@@ -10,6 +10,7 @@ Quick runbook for the daily briefing bot and urgent alert bot.
 - Start with `--dry-run` and inspect the preview payload before re-enabling any scheduled delivery.
 - Daily runs fail loudly when `0` articles are fetched, so feed/network failures do not silently look green.
 - Daily runs may reuse the latest fetched articles when there are no unseen candidates, so the scheduled briefing does not skip a day unnecessarily.
+- Daily selection now prefers fewer distinct stories over near-duplicate filler when the fresh candidate pool is narrow.
 - Alert runs save a preview JSON in Actions when triggered through the hardened workflow path.
 
 ## Setup

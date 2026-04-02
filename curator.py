@@ -27,6 +27,111 @@ _FOCUS_BONUS = {
     "video_image": 3.0,
     "voice_audio": 3.0,
 }
+_LAUNCH_KEYWORDS = {
+    "launch",
+    "launches",
+    "released",
+    "release",
+    "introduces",
+    "introduce",
+    "rolls out",
+    "new model",
+    "new version",
+    "available",
+    "unveils",
+}
+_OPERATIONAL_KEYWORDS = {
+    "api",
+    "sdk",
+    "integration",
+    "integrates",
+    "plugin",
+    "partnership",
+    "partner",
+    "partners",
+    "fund",
+    "funding",
+    "builders program",
+    "program",
+    "acquires",
+    "acquisition",
+    "pricing",
+    "price",
+    "prices",
+    "beta",
+    "alpha",
+    "general availability",
+    "generally available",
+    "open source",
+    "open-source",
+    "enterprise",
+    "for teams",
+    "for creators",
+}
+_SOFT_CONTEXT_KEYWORDS = {
+    "opinion",
+    "analysis",
+    "review",
+    "essay",
+    "education",
+    "school",
+    "schools",
+    "curriculum",
+    "student",
+    "students",
+    "artist",
+    "artists",
+    "art school",
+    "art schools",
+    "memories",
+    "memory",
+    "debate",
+    "ethics",
+    "controversy",
+}
+_TITLE_TOKEN_STOPWORDS = {
+    "about",
+    "after",
+    "agent",
+    "agents",
+    "ai",
+    "all",
+    "and",
+    "app",
+    "apps",
+    "artificial",
+    "being",
+    "can",
+    "content",
+    "creative",
+    "creator",
+    "creators",
+    "feature",
+    "features",
+    "for",
+    "from",
+    "has",
+    "have",
+    "how",
+    "image",
+    "images",
+    "into",
+    "its",
+    "model",
+    "models",
+    "new",
+    "photo",
+    "photos",
+    "that",
+    "the",
+    "their",
+    "them",
+    "this",
+    "tools",
+    "video",
+    "with",
+    "your",
+}
 _POSITIVE_KEYWORDS = {
     "agent": 1.8,
     "assistant": 1.2,
@@ -84,6 +189,73 @@ for keyword in TEAM_TOOL_WATCHLIST:
     _KANTA_EXECUTION_KEYWORDS[keyword] = max(_KANTA_EXECUTION_KEYWORDS.get(keyword, 0.0), 1.8)
 _PRIORITY_FOCUS_BUCKETS = ("video_image", "voice_audio")
 _MIN_FOCUS_SCORE = 6.5
+
+
+def _combined_text(article: dict) -> str:
+    return " ".join(
+        [
+            str(article.get("title", "")).lower(),
+            str(article.get("summary", "")).lower(),
+            str(article.get("content_text", "")).lower(),
+            " ".join(str(keyword).lower() for keyword in article.get("keywords", [])),
+        ]
+    )
+
+
+def _story_tokens(article: dict) -> set[str]:
+    headline = " ".join(
+        [
+            str(article.get("title", "")).lower(),
+            " ".join(str(keyword).lower() for keyword in article.get("keywords", [])[:5]),
+        ]
+    )
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for token in re.findall(r"[a-z0-9]+", headline):
+        if len(token) < 3 or token in _TITLE_TOKEN_STOPWORDS:
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        tokens.append(token)
+    return set(tokens[:8])
+
+
+def _has_operational_signal(article: dict) -> bool:
+    combined = _combined_text(article)
+    return any(keyword in combined for keyword in _LAUNCH_KEYWORDS) or any(keyword in combined for keyword in _OPERATIONAL_KEYWORDS)
+
+
+def _has_watchlist_signal(article: dict) -> bool:
+    combined = _combined_text(article)
+    return any(keyword in combined for keyword in TEAM_TOOL_WATCHLIST)
+
+
+def _is_soft_context_article(article: dict) -> bool:
+    combined = _combined_text(article)
+    if _has_operational_signal(article) or _has_watchlist_signal(article):
+        return False
+    return any(keyword in combined for keyword in _SOFT_CONTEXT_KEYWORDS)
+
+
+def _is_similar_story(candidate: dict, selected: list[dict]) -> bool:
+    candidate_tokens = _story_tokens(candidate)
+    if not candidate_tokens:
+        return False
+
+    for article in selected:
+        existing_tokens = _story_tokens(article)
+        if not existing_tokens:
+            continue
+        shared = candidate_tokens & existing_tokens
+        if len(shared) >= 3:
+            return True
+        union = candidate_tokens | existing_tokens
+        if len(shared) >= 2 and union and (len(shared) / len(union)) >= 0.5:
+            return True
+    return False
+
+
 def _article_context(article: dict, idx: int) -> str:
     title = str(article.get("title", "")).strip()
     summary = str(article.get("summary", "")).strip()
@@ -127,6 +299,10 @@ def _heuristic_score(article: dict) -> float:
     combined = " ".join([title, summary, content])
     focus_bucket = get_focus_bucket(article)
     kanta_fit_score = get_kanta_fit_score(article)
+    operational_hit = any(keyword in combined for keyword in _OPERATIONAL_KEYWORDS)
+    launch_hit = any(keyword in combined for keyword in _LAUNCH_KEYWORDS)
+    watchlist_hit = any(keyword in combined for keyword in TEAM_TOOL_WATCHLIST)
+    soft_context_hit = any(keyword in combined for keyword in _SOFT_CONTEXT_KEYWORDS)
 
     score = 5.0
 
@@ -147,7 +323,16 @@ def _heuristic_score(article: dict) -> float:
         if keyword in combined:
             score += delta
 
+    if launch_hit:
+        score += 0.8
+
+    if operational_hit:
+        score += 0.8
+
     score += max(-2.2, min(2.2, (kanta_fit_score - 5.0) * 0.8))
+
+    if soft_context_hit and not (launch_hit or operational_hit or watchlist_hit):
+        score -= 1.4
 
     published = article.get("published")
     if isinstance(published, datetime):
@@ -164,47 +349,129 @@ def _blend_selection_score(editorial_score: float, kanta_fit_score: float) -> fl
     return round((editorial_score * 0.55) + (kanta_fit_score * 0.45), 1)
 
 
+def _try_select_article(
+    article: dict,
+    *,
+    selected: list[dict],
+    used_urls: set[str],
+    used_sources: set[str],
+    soft_context_count: int,
+    top_n: int,
+    enforce_unique_source: bool,
+    enforce_soft_limit: bool,
+    enforce_story_dedup: bool,
+) -> bool:
+    article_url = str(article.get("url", "")).strip()
+    if article_url and article_url in used_urls:
+        return False
+
+    source_name = str(article.get("source_name", "")).strip()
+    if enforce_unique_source and len(selected) < min(top_n, 3) and source_name and source_name in used_sources:
+        return False
+
+    if enforce_story_dedup and _is_similar_story(article, selected):
+        return False
+
+    if enforce_soft_limit and _is_soft_context_article(article) and soft_context_count >= 1:
+        return False
+
+    selected.append(article)
+    if article_url:
+        used_urls.add(article_url)
+    if source_name:
+        used_sources.add(source_name)
+    return True
+
+
+def _fill_selection(
+    candidates: list[dict],
+    *,
+    selected: list[dict],
+    used_urls: set[str],
+    used_sources: set[str],
+    top_n: int,
+    enforce_unique_source: bool,
+    enforce_soft_limit: bool,
+    enforce_story_dedup: bool,
+) -> list[dict]:
+    soft_context_count = sum(1 for article in selected if _is_soft_context_article(article))
+    for article in candidates:
+        if len(selected) >= top_n:
+            break
+        if _try_select_article(
+            article,
+            selected=selected,
+            used_urls=used_urls,
+            used_sources=used_sources,
+            soft_context_count=soft_context_count,
+            top_n=top_n,
+            enforce_unique_source=enforce_unique_source,
+            enforce_soft_limit=enforce_soft_limit,
+            enforce_story_dedup=enforce_story_dedup,
+        ):
+            if _is_soft_context_article(article):
+                soft_context_count += 1
+    return selected
+
+
 def _apply_focus_balance(ranked_articles: list[dict], top_n: int) -> list[dict]:
     if top_n <= 0 or not ranked_articles:
         return []
 
     selected: list[dict] = []
     used_urls: set[str] = set()
+    used_sources: set[str] = set()
 
     for focus_bucket in _PRIORITY_FOCUS_BUCKETS:
         if len(selected) >= top_n:
             break
 
-        candidate = next(
-            (
-                article
-                for article in ranked_articles
-                if get_focus_bucket(article) == focus_bucket and float(article.get("score", 0)) >= _MIN_FOCUS_SCORE
-            ),
-            None,
+        bucket_candidates = [
+            article
+            for article in ranked_articles
+            if get_focus_bucket(article) == focus_bucket and float(article.get("score", 0)) >= _MIN_FOCUS_SCORE
+        ]
+        _fill_selection(
+            bucket_candidates,
+            selected=selected,
+            used_urls=used_urls,
+            used_sources=used_sources,
+            top_n=top_n,
+            enforce_unique_source=True,
+            enforce_soft_limit=True,
+            enforce_story_dedup=True,
         )
-        if candidate is None:
-            continue
 
-        candidate_url = str(candidate.get("url", "")).strip()
-        if candidate_url and candidate_url in used_urls:
-            continue
-
-        selected.append(candidate)
-        if candidate_url:
-            used_urls.add(candidate_url)
-
-    for article in ranked_articles:
-        if len(selected) >= top_n:
-            break
-
-        article_url = str(article.get("url", "")).strip()
-        if article_url and article_url in used_urls:
-            continue
-
-        selected.append(article)
-        if article_url:
-            used_urls.add(article_url)
+    _fill_selection(
+        ranked_articles,
+        selected=selected,
+        used_urls=used_urls,
+        used_sources=used_sources,
+        top_n=top_n,
+        enforce_unique_source=True,
+        enforce_soft_limit=True,
+        enforce_story_dedup=True,
+    )
+    _fill_selection(
+        ranked_articles,
+        selected=selected,
+        used_urls=used_urls,
+        used_sources=used_sources,
+        top_n=top_n,
+        enforce_unique_source=False,
+        enforce_soft_limit=True,
+        enforce_story_dedup=True,
+    )
+    _fill_selection(
+        ranked_articles,
+        selected=selected,
+        used_urls=used_urls,
+        used_sources=used_sources,
+        top_n=top_n,
+        enforce_unique_source=False,
+        enforce_soft_limit=False,
+        enforce_story_dedup=True,
+    )
 
     selected.sort(
         key=lambda article: (
