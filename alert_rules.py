@@ -55,6 +55,55 @@ _LAUNCH_KEYWORDS = {
     "available",
     "unveils",
 }
+_OPERATIONAL_ALERT_KEYWORDS = {
+    "api",
+    "sdk",
+    "integration",
+    "integrates",
+    "plugin",
+    "partnership",
+    "partner",
+    "partners",
+    "fund",
+    "funding",
+    "builders program",
+    "program",
+    "acquires",
+    "acquisition",
+    "pricing",
+    "price",
+    "prices",
+    "beta",
+    "alpha",
+    "general availability",
+    "generally available",
+    "open source",
+    "open-source",
+    "enterprise",
+    "for teams",
+    "for creators",
+}
+_SOFT_CONTEXT_KEYWORDS = {
+    "opinion",
+    "analysis",
+    "review",
+    "essay",
+    "education",
+    "school",
+    "schools",
+    "curriculum",
+    "student",
+    "students",
+    "artist",
+    "artists",
+    "art school",
+    "art schools",
+    "memories",
+    "memory",
+    "debate",
+    "ethics",
+    "controversy",
+}
 _RISK_KEYWORDS = {
     "copyright",
     "lawsuit",
@@ -90,6 +139,12 @@ def score_alert(article: dict) -> tuple[float, str]:
     headline = _headline_text(article)
     focus_bucket = get_focus_bucket(article)
     kanta_fit_score = get_kanta_fit_score(article)
+    watchlist_hit = any(keyword in combined for keyword in _KANTA_WATCHLIST)
+    bytedance_hit = any(keyword in headline for keyword in _BYTE_DANCE_KEYWORDS)
+    launch_hit = any(keyword in combined for keyword in _LAUNCH_KEYWORDS)
+    operational_hit = any(keyword in combined for keyword in _OPERATIONAL_ALERT_KEYWORDS)
+    risk_hit = any(keyword in combined for keyword in _RISK_KEYWORDS)
+    soft_context_hit = any(keyword in combined for keyword in _SOFT_CONTEXT_KEYWORDS)
     score = 0.0
 
     if focus_bucket in _FOCUS_BONUS:
@@ -101,7 +156,7 @@ def score_alert(article: dict) -> tuple[float, str]:
     elif priority == "high":
         score += 1.0
 
-    if any(keyword in headline for keyword in _BYTE_DANCE_KEYWORDS):
+    if bytedance_hit:
         score += 3.0
         label = "ByteDance"
     elif any(keyword in combined for keyword in _VOICE_ALERT_KEYWORDS):
@@ -120,10 +175,13 @@ def score_alert(article: dict) -> tuple[float, str]:
     else:
         label = "AI Update"
 
-    if any(keyword in combined for keyword in _LAUNCH_KEYWORDS):
+    if launch_hit:
         score += 2.0
 
-    if any(keyword in combined for keyword in _KANTA_WATCHLIST):
+    if operational_hit:
+        score += 1.6
+
+    if watchlist_hit:
         score += 1.8
 
     if any(keyword in combined for keyword in TEAM_PRIORITY_KEYWORDS):
@@ -131,12 +189,20 @@ def score_alert(article: dict) -> tuple[float, str]:
 
     score += max(-1.5, min(1.5, (kanta_fit_score - 5.0) * 0.5))
 
-    if any(keyword in combined for keyword in _RISK_KEYWORDS):
-        if any(keyword in combined for keyword in _BYTE_DANCE_KEYWORDS):
+    if risk_hit:
+        if bytedance_hit:
             score += 1.0
             label = "ByteDance Risk"
+        elif watchlist_hit or launch_hit or operational_hit:
+            score -= 0.4
         else:
-            score -= 1.2
+            score -= 1.4
+
+    if not (launch_hit or operational_hit or watchlist_hit or priority == "critical"):
+        score -= 1.2
+
+    if soft_context_hit and not (launch_hit or operational_hit or watchlist_hit or priority in {"critical", "high"}):
+        score -= 2.2
 
     published = article.get("published")
     if isinstance(published, datetime):

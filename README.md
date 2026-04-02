@@ -5,11 +5,12 @@ Quick runbook for the daily briefing bot and urgent alert bot.
 ## Current operating mode
 
 - Daily auto-send is enabled at `09:17 KST` via `.github/workflows/daily-news.yml`.
-- Alert auto-send is not part of the active operating flow.
+- Alert auto-send is enabled every `2` hours via `.github/workflows/urgent-alerts.yml`.
 - The recommended entry point for validation is `newsbot.py`.
 - Start with `--dry-run` and inspect the preview payload before re-enabling any scheduled delivery.
 - Daily runs fail loudly when `0` articles are fetched, so feed/network failures do not silently look green.
 - Daily runs may reuse the latest fetched articles when there are no unseen candidates, so the scheduled briefing does not skip a day unnecessarily.
+- Alert runs save a preview JSON in Actions when triggered through the hardened workflow path.
 
 ## Setup
 
@@ -108,6 +109,12 @@ Run urgent alerts via the unified v2 entry point:
 
 ```powershell
 python newsbot.py alert --dry-run --preview-path reports/alert-preview.json
+```
+
+Run urgent alerts live and still save a preview JSON:
+
+```powershell
+python newsbot.py alert --preview-path reports/alert-preview.json
 ```
 
 Compare summary quality across providers/models:

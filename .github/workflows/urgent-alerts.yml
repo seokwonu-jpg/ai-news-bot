@@ -6,9 +6,14 @@ on:
     - cron: '0 */2 * * *'
   workflow_dispatch:
 
+concurrency:
+  group: urgent-alerts-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   send-alerts:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -38,6 +43,17 @@ jobs:
           restore-keys: |
             seen-alerts-
 
+      - name: Validate required secrets
+        shell: bash
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_ALERT_WEBHOOK_URL: ${{ secrets.SLACK_ALERT_WEBHOOK_URL }}
+        run: |
+          if [[ -z "${SLACK_ALERT_WEBHOOK_URL}" && -z "${SLACK_WEBHOOK_URL}" ]]; then
+            echo "::error::Missing required GitHub Actions secret: SLACK_ALERT_WEBHOOK_URL or SLACK_WEBHOOK_URL"
+            exit 1
+          fi
+
       - name: Run alert bot
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -51,7 +67,15 @@ jobs:
           LITELLM_SUMMARIZER_MODEL: ${{ vars.LITELLM_SUMMARIZER_MODEL }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           SLACK_ALERT_WEBHOOK_URL: ${{ secrets.SLACK_ALERT_WEBHOOK_URL }}
-        run: python alert_bot.py
+        run: python newsbot.py alert --preview-path reports/alert-preview.json
+
+      - name: Upload preview artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: urgent-alerts-preview
+          path: reports/*.json
+          if-no-files-found: ignore
 
       - name: Save seen alerts cache
         if: always()
